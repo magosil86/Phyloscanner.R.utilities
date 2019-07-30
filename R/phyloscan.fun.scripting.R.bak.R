@@ -65,46 +65,54 @@ phsc.cmd.bam.calculate.read.distribution <- function(pty.runs, pty.args)
 }	
 
 #' @export
+#' @title Generate bash commands to generate phylogenies with RAxML  
+#' @description This function generates bash commands to generate one phylogeny with RAxML, that can be called via 'system' in R, or written to file to run on a UNIX system.
+#' @param infile.fasta Full path name to input fasta file.
+#' @param outfile Full path name to output file. All RAxML output other than the best tree will be zipped and returned as 'outfile.zip'.
+#' @param pr Full path name to RAXML program.
+#' @param pr.args RAXML arguments. 
+#' @return	Character string
+raxml.cmd<- function(infile.fasta, outfile=paste(infile.fasta,'.newick',sep=''), pr='raxmlHPC-SSE3', pr.args='-m GTRCAT --HKY85 -p 42')
+{		
+	cmd				<- paste("#######################################################
+# start: RAXML
+#######################################################\n",sep='')												
+	cmd				<- paste(cmd,"CWD=$(pwd)\n",sep='')
+	cmd				<- paste(cmd,"echo $CWD\n",sep='')	
+	tmpdir.prefix	<- paste('rx_',format(Sys.time(),"%y-%m-%d-%H-%M-%S"),sep='')
+	tmpdir			<- paste("$CWD/",tmpdir.prefix,sep='')
+	tmp.in			<- basename(infile.fasta)
+	tmp.out			<- basename(outfile)	
+	cmd				<- paste(cmd,"mkdir -p ",tmpdir,'\n',sep='')
+	cmd				<- paste(cmd,'cp "',infile.fasta,'" ',file.path(tmpdir,tmp.in),'\n', sep='')	
+	cmd				<- paste(cmd,'cd "',tmpdir,'"\n', sep='')	
+	cmd				<- paste(cmd, pr,' ',pr.args,' -s ', tmp.in,' -n ', tmp.out,'\n', sep='')
+	cmd				<- paste(cmd, "rm ", tmp.in,'\n',sep='')	
+	cmd				<- paste(cmd, 'cp RAxML_bestTree.',basename(outfile),' "',outfile,'"\n',sep='')
+	cmd				<- paste(cmd, 'for file in *; do\n\tzip -ur9XTjq ',basename(outfile),'.zip "$file"\ndone\n',sep='')	
+	cmd				<- paste(cmd, 'cp ',basename(outfile),'.zip "',dirname(outfile),'"\n',sep='')
+	cmd				<- paste(cmd,'cd $CWD\n', sep='')
+	cmd				<- paste(cmd, "rm -r ", tmpdir,'\n',sep='')
+	cmd				<- paste(cmd, "#######################################################
+# end: RAXML
+#######################################################\n",sep='')
+	cmd
+}
+
+#' @export
 #' @title Generate bash commands for multiple phyloscanner runs
 #' @param pty.runs Data.table of individual assignments to phyloscanner runs, with columns 'PTY_RUN' (run id), 'SAMPLE_ID' (ID of individuals that are assigned to that run). Optional columns: 'RENAME_ID' (new ID for each bam file in phyloscanner output).
 #' @param pty.args List of phyloscanner input variables. See examples.
 #' @return Data.table with columns 'PTY_RUN' (run id) and 'CMD' (bash commands for that run). 
 #' @description This function generates bash commands for multiple phyloscanner runs, that can be called via 'system' in R, or written to file to run on a UNIX system.
 #' @example example/ex.cmd.phyloscanner.multi.R  
-phsc.cmd.phyloscanner.multi <- function(pty.runs, pty.args, regex.ref='_ref.fasta$', postfix.sample.id='\\.bam|_ref\\.fasta') 		
+phsc.cmd.phyloscanner.multi <- function(pty.runs, pty.args) 		
 {
-	#
-	#	associate BAM and REF files with each scheduled phylotype run
-	#	
-	set(pty.runs, NULL, 'SAMPLE_ID',  pty.runs[, gsub('\\.bam$','',SAMPLE_ID)])
-	#	get available Bam files
-	ptyd		<- data.table(FILE=list.files(pty.args[['data.dir']], full.names=TRUE))
-	ptyd[, TYPE:=NA_character_]
-	set(ptyd, ptyd[, which(grepl('.bam$',FILE))], 'TYPE', 'BAM')
-	#	get Reference files
-	#	if reference files that were used in assembly are not specified in pty.runs, search for SAMPLE_ID+'_ref.fasta'
-	if(!any(colnames(pty.runs)=='REFERENCE_ID'))
-	{		
-		set(ptyd, ptyd[, which(grepl(regex.ref,FILE))], 'TYPE', 'REF')		
-		ptyd		<- subset(ptyd, !is.na(TYPE))
-		ptyd[, SAMPLE_ID:= gsub(postfix.sample.id,'',basename(FILE))]
-		ptyd		<- dcast.data.table(ptyd, SAMPLE_ID~TYPE, value.var='FILE')		
-	}
-	#	if reference files that were used in assembly are specified in pty.runs, use these
-	if(any(colnames(pty.runs)=='REFERENCE_ID'))
-	{
-		tmp			<- subset(ptyd, is.na(TYPE))
-		tmp[, REFERENCE_ID:= gsub('\\.bam','',basename(FILE))]
-		tmp			<- merge(subset(pty.runs, select=c(SAMPLE_ID, REFERENCE_ID)), subset(tmp, select=c(REFERENCE_ID, FILE)), by='REFERENCE_ID')
-		tmp[, TYPE:='REF']
-		tmp[, REFERENCE_ID:=NULL]
-		ptyd		<- subset(ptyd, !is.na(TYPE))
-		ptyd[, SAMPLE_ID:= gsub('\\.bam$','',basename(FILE))]
-		ptyd		<- rbind(ptyd, tmp)
-		ptyd		<- dcast.data.table(ptyd, SAMPLE_ID~TYPE, value.var='FILE')
-	}
-	#	merge
-	ptyd	<- merge(pty.runs, ptyd, by='SAMPLE_ID', all.x=1)	
+	stopifnot( any(colnames(pty.runs)=='PTY_RUN') )
+	stopifnot( any(colnames(pty.runs)=='SAMPLE_ID') )
+	stopifnot( any(colnames(pty.runs)=='BAM') )
+	stopifnot( any(colnames(pty.runs)=='REF') )	
+	ptyd	<- copy(pty.runs)		
 	if(!any(is.na(pty.args[['select']])))
 		ptyd<- subset(ptyd, PTY_RUN%in%pty.args[['select']])			
 	#	if background alignment is specified in pty.runs, use it
@@ -119,14 +127,11 @@ phsc.cmd.phyloscanner.multi <- function(pty.runs, pty.args, regex.ref='_ref.fast
 		set(ptyd, NULL, 'BACKGROUND_ID', NULL)
 		setnames(ptyd, 'FILE', 'BACKGROUND_ID')
 	}
-	if(ptyd[,any(is.na(BAM))])
-		warning('\nCould not find location of BAM files for all individuals in pty.runs, n=', ptyd[, length(which(is.na(BAM)))],'\nMissing individuals are ignored. Please check.')	
-	if(ptyd[,any(is.na(REF))])
-		warning('\nCould not find location of reference files for all individuals in pty.runs, n=', ptyd[, length(which(is.na(REF)))],'\nMissing individuals are ignored. Please check.')	
 	setkey(ptyd, PTY_RUN)
-	#
+	#	add legacy arguments
+	pty.args['all.bootstrap.trees']	<- FALSE
+	pty.args['num.bootstraps']	<- 0		
 	#	write pty.run files and get pty command lines
-	#
 	pty.c		<- ptyd[, {
 				#	PTY_RUN<- z <- 1; BAM<- subset(ptyd, PTY_RUN==z)[, BAM]; REF<- subset(ptyd, PTY_RUN==z)[, REF]
 				#	SAMPLE_ID<- subset(ptyd, PTY_RUN==z)[, SAMPLE_ID]; RENAME_ID<- subset(ptyd, PTY_RUN==z)[, RENAME_ID]; BACKGROUND_ID<- subset(ptyd, PTY_RUN==z)[, BACKGROUND_ID]
@@ -189,8 +194,7 @@ phsc.cmd.phyloscanner.one<- function(pty.args, file.input, file.patient)
 	no.trees					<- ifelse(!is.na(no.trees) & no.trees, '--no-trees', NA_character_)
 	num.bootstraps				<- ifelse(is.na(no.trees) & !is.na(num.bootstraps) & is.numeric(num.bootstraps) & num.bootstraps>1, as.integer(num.bootstraps), NA_integer_)
 	dont.check.duplicates		<- ifelse(!is.na(dont.check.duplicates) & dont.check.duplicates, '--dont-check-duplicates', NA_character_)
-	dont.check.recombination	<- ifelse(!is.na(dont.check.recombination) & dont.check.recombination==FALSE, '--check-recombination', NA_character_)
-	discard.improper.pairs      <- ifelse(!is.na(discard.improper.pairs) & discard.improper.pairs, '--discard-improper-pairs', NA_character_)	
+	dont.check.recombination	<- ifelse(!is.na(dont.check.recombination) & dont.check.recombination==FALSE, '--check-recombination', NA_character_)	
 	#	create local tmp dir
 	cmd		<- paste("CWD=$(pwd)\n",sep='\n')
 	cmd		<- paste(cmd,"echo $CWD\n",sep='')
@@ -206,8 +210,6 @@ phsc.cmd.phyloscanner.one<- function(pty.args, file.input, file.patient)
 	cmd		<- paste(cmd, '--merging-threshold-a', merge.threshold,'--min-read-count',min.read.count,'--quality-trim-ends', quality.trim.ends, '--min-internal-quality',min.internal.quality,'--keep-output-together')
 	if(!is.na(merge.paired.reads))
 		cmd	<- paste(cmd,' ',merge.paired.reads,sep='')	
-	if(!is.na(discard.improper.pairs))
-		cmd	<- paste(cmd,' ',discard.improper.pairs,sep='')	
 	if(!is.na(dont.check.duplicates))
 		cmd	<- paste(cmd,' ',dont.check.duplicates,sep='')
 	if(!is.na(dont.check.recombination))
@@ -259,7 +261,7 @@ phsc.cmd.phyloscanner.one<- function(pty.args, file.input, file.patient)
 		out.dir2<- file.path(out.dir,paste0(run.id,'_trees'))
 		cmd		<- paste(cmd,'\nmkdir -p ',out.dir2)		
 	}
-	cmd		<- paste(cmd, '\nmv ',run.id,'* "',out.dir2,'"\n',sep='')	
+	cmd		<- paste(cmd, '\ncp ',run.id,'* "',out.dir2,'"\n',sep='')	
 	#	zip up everything else
 	tmp		<- ''
 	if(length(window.coord)==2)
@@ -267,7 +269,7 @@ phsc.cmd.phyloscanner.one<- function(pty.args, file.input, file.patient)
 	if(is.null(mem.save) || is.na(mem.save) || mem.save==0)
 	{
 		cmd		<- paste(cmd, 'for file in *; do\n\tzip -ur9XTjq ',paste(run.id,'_otherstuff',tmp,'.zip',sep=''),' "$file"\ndone\n',sep='')
-		cmd		<- paste(cmd, 'mv ',paste(run.id,'_otherstuff',tmp,'.zip',sep=''),' "',out.dir2,'"\n',sep='')		
+		cmd		<- paste(cmd, 'cp ',paste(run.id,'_otherstuff',tmp,'.zip',sep=''),' "',out.dir2,'"\n',sep='')		
 	}
 	#	clean up
 	cmd		<- paste(cmd,'cd $CWD\nrm -r "',tmpdir,'"\n',sep='')
@@ -306,11 +308,11 @@ phsc.cmd.phyloscanner.one.resume<- function(prefix.infiles, pty.args)
 	cmd		<- paste(cmd, phsc.cmd.process.phyloscanner.output.in.directory(tmpdir, file.patient, pty.args), collapse='\n',sep='')
 	#	move all files starting with current run ID
 	run.id	<- gsub('_patients.txt','',basename(file.patient))
-	cmd		<- paste(cmd, '\nmv ',run.id,'* "',pty.args$out.dir,'"\n',sep='')	
+	cmd		<- paste(cmd, '\ncp ',run.id,'* "',pty.args$out.dir,'"\n',sep='')	
 	#	zip up everything else	
 	tmp	<- paste(run.id,'_otherstuff.zip',sep='')
 	cmd		<- paste(cmd, 'for file in *; do\n\tzip -ur9XTj ',tmp,' "$file"\ndone\n',sep='')
-	cmd		<- paste(cmd, 'mv ',tmp,' "',pty.args$out.dir,'"\n',sep='')
+	cmd		<- paste(cmd, 'cp ',tmp,' "',pty.args$out.dir,'"\n',sep='')
 	#	clean up
 	cmd		<- paste(cmd,'cd $CWD\nrm -r "',tmpdir,'"\n',sep='')		
 	cmd
